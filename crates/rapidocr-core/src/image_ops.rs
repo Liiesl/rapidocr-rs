@@ -14,7 +14,7 @@ use crate::{
     types::Quad,
 };
 
-pub(crate) fn load_rgb_image(path: impl AsRef<Path>) -> Result<RgbImage> {
+pub fn load_rgb_image(path: impl AsRef<Path>) -> Result<RgbImage> {
     let path = path.as_ref();
     if !path.exists() {
         bail!("image file not found at {}", path.display());

@@ -12,9 +12,10 @@ pub mod config;
 pub(crate) mod db_postprocess;
 pub(crate) mod det;
 pub(crate) mod geometry;
-pub(crate) mod image_ops;
+pub mod image_ops;
 pub(crate) mod inference;
 pub mod model;
+pub mod pipeline;
 pub(crate) mod rec;
 pub mod types;
 
@@ -22,6 +23,7 @@ pub mod types;
 pub mod tokio;
 
 pub use cancellation::{is_cancelled_error, OcrCancellationToken, OcrCancelled};
+pub use pipeline::{DetRecPipeline, PipelineError};
 #[cfg(feature = "tokio")]
 pub use tokio::{OcrTask, TokioOcrError, TokioRapidOcr};
 
@@ -40,7 +42,7 @@ use crate::{
         apply_vertical_padding, crop_perspective, load_rgb_image, resize_image_within_bounds,
     },
     rec::TextRecognizer,
-    types::{OcrLine, OcrOutput, OcrTimings, Quad, TimedOcrOutput},
+    types::{OcrLine, OcrOutput, OcrTimings, Quad, RecText, TimedOcrOutput},
 };
 
 /// Stateful OCR pipeline runner.
@@ -327,6 +329,106 @@ impl RapidOcr {
 
         Ok((boxes, crops, timings))
     }
+}
+
+/// Pipeline-level preprocessing parameters shared by [`RapidOcr`] and the
+/// parallel [`crate::pipeline::DetRecPipeline`] detection workers.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DetPreprocess {
+    pub min_side_len: u32,
+    pub max_side_len: u32,
+    pub width_height_ratio: f32,
+    pub min_height: u32,
+}
+
+impl From<&RapidOcrConfig> for DetPreprocess {
+    fn from(cfg: &RapidOcrConfig) -> Self {
+        Self {
+            min_side_len: cfg.min_side_len,
+            max_side_len: cfg.max_side_len,
+            width_height_ratio: cfg.width_height_ratio,
+            min_height: cfg.min_height,
+        }
+    }
+}
+
+/// Runs detection on `image` and returns boxes scaled back to the caller's
+/// image space plus recognition crops extracted from the padded detector
+/// image that produced the boxes. Shared by the sequential [`RapidOcr`] and
+/// the parallel pipeline's detection workers.
+pub(crate) fn detect_and_crop(
+    detector: &mut TextDetector,
+    image: &image::RgbImage,
+    pre: &DetPreprocess,
+    needs_crops: bool,
+    cancellation: &OcrCancellationToken,
+) -> Result<(Vec<Quad>, Vec<image::RgbImage>)> {
+    cancellation.checkpoint()?;
+    let original_width = image.width();
+    let original_height = image.height();
+
+    let (resized, ratio_w, ratio_h) =
+        resize_image_within_bounds(image, pre.min_side_len, pre.max_side_len)?;
+    let (det_image, padding_top) =
+        apply_vertical_padding(&resized, pre.width_height_ratio, pre.min_height)?;
+
+    let det = detector.detect_timed(&det_image, cancellation)?;
+    let mut boxes = det.boxes;
+
+    // Crops are extracted from the exact padded detector image that produced
+    // the boxes. Only after crop generation do we remove padding and scale
+    // coordinates back to the caller's original image space.
+    let crops = if needs_crops {
+        let mut crops = Vec::with_capacity(boxes.len());
+        for bbox in &boxes {
+            cancellation.checkpoint()?;
+            crops.push(crop_perspective(&det_image, bbox)?);
+        }
+        crops
+    } else {
+        Vec::new()
+    };
+
+    for b in &mut boxes {
+        cancellation.checkpoint()?;
+        if padding_top > 0 {
+            for point in &mut b.points {
+                point[1] -= padding_top as f32;
+            }
+        }
+        b.scale(ratio_w, ratio_h);
+        b.clip(original_width, original_height);
+    }
+
+    Ok((boxes, crops))
+}
+
+/// Zips detected boxes with recognized texts into lines, dropping empty reads
+/// and (for detected boxes) reads below `text_score`. Shared by the
+/// sequential [`RapidOcr`] and the parallel pipeline's recognition worker.
+pub(crate) fn build_lines(
+    boxes: Vec<Quad>,
+    texts: Vec<RecText>,
+    text_score: f32,
+    detection_enabled: bool,
+) -> Vec<OcrLine> {
+    boxes
+        .into_iter()
+        .zip(texts)
+        .filter_map(|(bbox, text)| {
+            if text.text.trim().is_empty() {
+                return None;
+            }
+            if detection_enabled && text.score < text_score {
+                return None;
+            }
+            Some(OcrLine {
+                bbox,
+                text: text.text,
+                score: text.score,
+            })
+        })
+        .collect()
 }
 
 fn elapsed_ms(start: Instant) -> f64 {

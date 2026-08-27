@@ -1,9 +1,9 @@
 [package]
 name = "rapidocr-core"
 version = "0.2.2"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/White-NX/rapidocr-rs"
 description = "Rust ONNX OCR core for RapidOCR-style detection, optional classification, and recognition pipelines"
 readme = "README.md"
 keywords = ["ocr", "onnx", "rapidocr", "paddleocr"]
