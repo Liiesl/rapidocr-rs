@@ -459,7 +459,7 @@ mod tests {
             cls: None,
             rec: Some(crate::config::RecConfig {
                 model_path: model_dir.join("korean_PP-OCRv5_rec_mobile.onnx"),
-                dict_path: model_dir.join("korean_dict.txt"),
+                dict_path: model_dir.join("ppocrv5_korean_dict.txt"),
                 image_shape: [3, 48, 320],
                 batch_size: 6,
             }),
