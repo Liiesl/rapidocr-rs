@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use ort::environment::Environment;
 
 use crate::{
     cancellation::OcrCancellationToken,
@@ -18,14 +19,19 @@ pub(crate) struct TextDetector {
 }
 
 impl TextDetector {
-    pub(crate) fn new(cfg: DetConfig, inference: InferenceOptions) -> Result<Self> {
+    pub(crate) fn new(
+        cfg: DetConfig,
+        inference: InferenceOptions,
+        environment: &Environment,
+    ) -> Result<Self> {
         cfg.validate().context("invalid detection config")?;
-        let session = OnnxSession::new(&cfg.model_path, inference, true).with_context(|| {
-            format!(
-                "failed to load detection model {}",
-                cfg.model_path.display()
-            )
-        })?;
+        let session =
+            OnnxSession::new(&cfg.model_path, inference, true, environment).with_context(|| {
+                format!(
+                    "failed to load detection model {}",
+                    cfg.model_path.display()
+                )
+            })?;
         let postprocess = DbPostProcess::new(DbPostProcessConfig::from(&cfg));
         Ok(Self {
             cfg,

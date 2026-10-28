@@ -3,6 +3,7 @@ use std::{fs, path::Path, time::Instant};
 use anyhow::{bail, Context, Result};
 use image::{Rgb, RgbImage};
 use ndarray::{s, Array4, Ix3};
+use ort::environment::Environment;
 
 use crate::{
     cancellation::OcrCancellationToken,
@@ -18,14 +19,19 @@ pub(crate) struct TextRecognizer {
 }
 
 impl TextRecognizer {
-    pub(crate) fn new(cfg: RecConfig, inference: InferenceOptions) -> Result<Self> {
+    pub(crate) fn new(
+        cfg: RecConfig,
+        inference: InferenceOptions,
+        environment: &Environment,
+    ) -> Result<Self> {
         cfg.validate().context("invalid recognition config")?;
-        let session = OnnxSession::new(&cfg.model_path, inference, false).with_context(|| {
-            format!(
-                "failed to load recognition model {}",
-                cfg.model_path.display()
-            )
-        })?;
+        let session =
+            OnnxSession::new(&cfg.model_path, inference, false, environment).with_context(|| {
+                format!(
+                    "failed to load recognition model {}",
+                    cfg.model_path.display()
+                )
+            })?;
         let characters = read_character_file(&cfg.dict_path)?;
         Ok(Self {
             cfg,

@@ -21,6 +21,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use image::RgbImage;
+use ort::environment::Environment;
 use thiserror::Error;
 
 use crate::{
@@ -110,6 +111,26 @@ impl DetRecPipeline {
         rec_inference: InferenceOptions,
         det_workers: usize,
     ) -> Result<Self, PipelineError> {
+        Self::new_with_env(
+            cfg,
+            det_inference,
+            rec_inference,
+            det_workers,
+            crate::default_environment()?,
+        )
+    }
+
+    /// Builds the pipeline using an existing ONNX Runtime environment.
+    ///
+    /// `ort` allows only one environment per process, so applications that also
+    /// create sessions outside this crate should share theirs here.
+    pub fn new_with_env(
+        cfg: &RapidOcrConfig,
+        det_inference: InferenceOptions,
+        rec_inference: InferenceOptions,
+        det_workers: usize,
+        environment: &Environment,
+    ) -> Result<Self, PipelineError> {
         if det_workers == 0 {
             return Err(anyhow!("det_workers must be greater than zero").into());
         }
@@ -142,19 +163,23 @@ impl DetRecPipeline {
             let (state, cancellation) = (Arc::clone(&state), cancellation.clone());
             let (worker_tx, det_rx) = mpsc::sync_channel(DET_QUEUE_CAPACITY);
             let pre = crate::DetPreprocess::from(cfg);
+            let environment = Environment::clone(environment);
             thread::Builder::new()
                 .name(format!("rapidocr-det-{i}"))
                 .spawn(move || {
-                    let mut detector = match TextDetector::new(det_cfg, det_inference) {
-                        Ok(detector) => detector,
-                        Err(error) => {
-                            let _ = results_tx.send((
-                                0,
-                                Err(anyhow!("failed to initialize detection worker {i}: {error}")),
-                            ));
-                            return;
-                        }
-                    };
+                    let mut detector =
+                        match TextDetector::new(det_cfg, det_inference, &environment) {
+                            Ok(detector) => detector,
+                            Err(error) => {
+                                let _ = results_tx.send((
+                                    0,
+                                    Err(anyhow!(
+                                        "failed to initialize detection worker {i}: {error}"
+                                    )),
+                                ));
+                                return;
+                            }
+                        };
                     det_worker_main(
                         &mut detector,
                         &pre,
@@ -172,19 +197,23 @@ impl DetRecPipeline {
         let worker_state = Arc::clone(&state);
         let worker_cancellation = cancellation.clone();
         let text_score = cfg.text_score;
+        let environment = Environment::clone(environment);
         thread::Builder::new()
             .name("rapidocr-rec".to_string())
             .spawn(move || {
-                let mut recognizer = match TextRecognizer::new(rec_cfg, rec_inference) {
-                    Ok(recognizer) => recognizer,
-                    Err(error) => {
-                        let _ = results_tx.send((
-                            0,
-                            Err(anyhow!("failed to initialize recognition worker: {error}")),
-                        ));
-                        return;
-                    }
-                };
+                let mut recognizer =
+                    match TextRecognizer::new(rec_cfg, rec_inference, &environment) {
+                        Ok(recognizer) => recognizer,
+                        Err(error) => {
+                            let _ = results_tx.send((
+                                0,
+                                Err(anyhow!(
+                                    "failed to initialize recognition worker: {error}"
+                                )),
+                            ));
+                            return;
+                        }
+                    };
                 rec_worker_main(
                     &mut recognizer,
                     text_score,

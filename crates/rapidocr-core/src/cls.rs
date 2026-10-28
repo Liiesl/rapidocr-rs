@@ -3,6 +3,7 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use image::{imageops, RgbImage};
 use ndarray::{s, Array4, Ix2};
+use ort::environment::Environment;
 
 use crate::{
     cancellation::OcrCancellationToken,
@@ -23,14 +24,19 @@ pub(crate) struct TextClassifier {
 }
 
 impl TextClassifier {
-    pub(crate) fn new(cfg: ClsConfig, inference: InferenceOptions) -> Result<Self> {
+    pub(crate) fn new(
+        cfg: ClsConfig,
+        inference: InferenceOptions,
+        environment: &Environment,
+    ) -> Result<Self> {
         cfg.validate().context("invalid classification config")?;
-        let session = OnnxSession::new(&cfg.model_path, inference, false).with_context(|| {
-            format!(
-                "failed to load classification model {}",
-                cfg.model_path.display()
-            )
-        })?;
+        let session =
+            OnnxSession::new(&cfg.model_path, inference, false, environment).with_context(|| {
+                format!(
+                    "failed to load classification model {}",
+                    cfg.model_path.display()
+                )
+            })?;
         Ok(Self { cfg, session })
     }
 

@@ -30,9 +30,14 @@ pub use tokio::{OcrTask, TokioOcrError, TokioRapidOcr};
 #[cfg(test)]
 mod e2e_tests;
 
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    sync::{Mutex, OnceLock},
+    time::Instant,
+};
 
 use anyhow::{bail, Context, Result};
+use ort::environment::Environment;
 
 use crate::{
     cls::TextClassifier,
@@ -44,6 +49,33 @@ use crate::{
     rec::TextRecognizer,
     types::{OcrLine, OcrOutput, OcrTimings, Quad, RecText, TimedOcrOutput},
 };
+
+static DEFAULT_ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+static ENVIRONMENT_INIT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Returns the crate's fallback ONNX Runtime environment for [`RapidOcr::new`].
+///
+/// Applications that already own an [`Environment`] should call
+/// [`RapidOcr::new_with_env`] instead so every session in the process shares
+/// the same environment.
+pub(crate) fn default_environment() -> Result<&'static Environment> {
+    if let Some(environment) = DEFAULT_ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+
+    let _guard = ENVIRONMENT_INIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(environment) = DEFAULT_ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+
+    let environment = ort::init().build()?;
+    let _ = DEFAULT_ENVIRONMENT.set(environment);
+    Ok(DEFAULT_ENVIRONMENT
+        .get()
+        .expect("ONNX Runtime environment set under lock"))
+}
 
 /// Stateful OCR pipeline runner.
 ///
@@ -62,6 +94,14 @@ impl RapidOcr {
     /// Enabled pipeline stages load their ONNX sessions immediately. Disabled
     /// stages do not require their model files or dictionaries to exist.
     pub fn new(cfg: RapidOcrConfig) -> Result<Self> {
+        Self::new_with_env(cfg, default_environment()?)
+    }
+
+    /// Builds an OCR pipeline using an existing ONNX Runtime environment.
+    ///
+    /// `ort` allows only one environment per process, so applications that also
+    /// create sessions outside this crate should share theirs here.
+    pub fn new_with_env(cfg: RapidOcrConfig, environment: &Environment) -> Result<Self> {
         cfg.validate().context("invalid OCR config")?;
         let detector = if cfg.pipeline.use_det {
             let det_cfg = cfg
@@ -69,7 +109,7 @@ impl RapidOcr {
                 .clone()
                 .context("pipeline.use_det is true but [det] config is missing")?;
             Some(
-                TextDetector::new(det_cfg, cfg.inference)
+                TextDetector::new(det_cfg, cfg.inference, environment)
                     .context("failed to initialize detection stage")?,
             )
         } else {
@@ -81,7 +121,7 @@ impl RapidOcr {
                 .clone()
                 .context("pipeline.use_cls is true but [cls] config is missing")?;
             Some(
-                TextClassifier::new(cls_cfg, cfg.inference)
+                TextClassifier::new(cls_cfg, cfg.inference, environment)
                     .context("failed to initialize classification stage")?,
             )
         } else {
@@ -93,7 +133,7 @@ impl RapidOcr {
                 .clone()
                 .context("pipeline.use_rec is true but [rec] config is missing")?;
             Some(
-                TextRecognizer::new(rec_cfg, cfg.inference)
+                TextRecognizer::new(rec_cfg, cfg.inference, environment)
                     .context("failed to initialize recognition stage")?,
             )
         } else {

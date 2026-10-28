@@ -2,7 +2,10 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use ndarray::{Array4, ArrayD};
-use ort::{session::builder::GraphOptimizationLevel, session::Session, value::TensorRef};
+use ort::{
+    environment::Environment, session::builder::GraphOptimizationLevel, session::Session,
+    value::TensorRef,
+};
 
 use crate::{cancellation::OcrCancellationToken, config::InferenceOptions};
 
@@ -15,6 +18,7 @@ impl OnnxSession {
         model_path: impl AsRef<Path>,
         options: InferenceOptions,
         dynamic_input_shape: bool,
+        environment: &Environment,
     ) -> Result<Self> {
         let model_path = model_path.as_ref();
         if !model_path.exists() {
@@ -30,7 +34,7 @@ impl OnnxSession {
 
         // Helper to build a Session::builder with the common options for a given EP.
         let build = |ep_is_directml: bool| -> Result<Session> {
-            let mut b = Session::builder()
+            let mut b = Session::builder(environment)
                 .map_err(|e| anyhow!(e.to_string()))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow!(e.to_string()))?
